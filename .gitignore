@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Mac junk
+.DS_Store
+
+# Sensitive data — never push this
+data.json
+
+# Claude project files
+.claude/
+
+# Logs
+*.log
+npm-debug.log*
