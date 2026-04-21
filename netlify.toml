@@ -1,0 +1,49 @@
+# ══════════════════════════════════════════════════
+#  Zaemu Cafe — Netlify Configuration
+#  Site: https://zaemucafethimphu.netlify.app
+# ══════════════════════════════════════════════════
+
+[build]
+  publish = "."          # serve from project root (index.html)
+
+# ── SPA routing: all paths → index.html ───────────
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
+
+# ── Security & Privacy Headers ────────────────────
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Prevent clickjacking
+    X-Frame-Options = "SAMEORIGIN"
+
+    # Prevent MIME sniffing
+    X-Content-Type-Options = "nosniff"
+
+    # XSS protection (legacy browsers)
+    X-XSS-Protection = "1; mode=block"
+
+    # Referrer privacy — don't leak URL to other sites
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+    # Permissions — block camera/mic/location by default
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+    # Content Security Policy — only load from same origin
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https:; font-src 'self' data:; frame-src 'none';"
+
+    # HSTS — force HTTPS for 1 year
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+
+# ── Cache static assets ───────────────────────────
+[[headers]]
+  for = "/logo.jpg"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
