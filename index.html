@@ -1296,7 +1296,7 @@
 
 <header>
   <div class="header-top">
-    <div class="logo" onclick="showPage('home')" style="cursor:pointer" title="Go to Home">
+    <div class="logo" onclick="_handleLogoTap();showPage('home')" style="cursor:pointer" title="Go to Home">
       <div class="logo-icon">
         <img src="logo.jpg" alt="Zaemu Cafe Logo" draggable="false">
       </div>
@@ -6968,7 +6968,6 @@ function renderProfile() {
     <div class="tabs" id="authTabs">
       <button class="tab active" onclick="switchAuthTab(this,'signIn')">Sign In</button>
       <button class="tab" onclick="switchAuthTab(this,'signUp')">Create Account</button>
-      <button class="tab" onclick="switchAuthTab(this,'staffTab')">👑 Staff</button>
     </div>
 
     <!-- Customer Sign In -->
@@ -7003,61 +7002,13 @@ function renderProfile() {
       <button class="btn btn-primary btn-block" onclick="signUp()">✅ Create Account</button>
     </div>
 
-    <!-- Staff Login -->
-    <div id="staffTab" style="display:none">
-      <p style="font-size:13px;color:#888;margin-bottom:10px;text-align:center">
-        Select your role below and enter your PIN to access your area.
-      </p>
-      <div style="background:#f0fff4;border:1.5px solid #a8d5b5;border-radius:8px;padding:9px 12px;margin-bottom:14px;font-size:12px;color:#1a5c38;line-height:1.7">
-        👑 <strong>Admin</strong> — Full dashboard &amp; settings&nbsp;&nbsp;
-        👨‍🍳 <strong>Chef</strong> — Kitchen &amp; orders&nbsp;&nbsp;
-        🏪 <strong>Vendor</strong> — Supplier portal
-        <div style="color:#aaa;font-size:11px;margin-top:3px">Don't have a PIN? Ask Admin to set one in Dashboard → Staff &amp; Accounts Management.</div>
-      </div>
-
-      <!-- Role cards -->
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px" id="slRoleCards">
-        <div class="sl-role-card" id="slCard_admin" onclick="selectStaffRole('admin')"
-          style="border:2px solid #ddd;border-radius:12px;padding:14px 8px;text-align:center;cursor:pointer;transition:all .2s;background:#fff">
-          <div style="font-size:28px;margin-bottom:6px">👑</div>
-          <div style="font-weight:700;font-size:13px;color:#1a1a2e">Admin</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Full access</div>
-        </div>
-        <div class="sl-role-card" id="slCard_chef" onclick="selectStaffRole('chef')"
-          style="border:2px solid #ddd;border-radius:12px;padding:14px 8px;text-align:center;cursor:pointer;transition:all .2s;background:#fff">
-          <div style="font-size:28px;margin-bottom:6px">👨‍🍳</div>
-          <div style="font-weight:700;font-size:13px;color:var(--druk-red)">Chef</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Kitchen access</div>
-        </div>
-        <div class="sl-role-card" id="slCard_vendor" onclick="selectStaffRole('vendor')"
-          style="border:2px solid #ddd;border-radius:12px;padding:14px 8px;text-align:center;cursor:pointer;transition:all .2s;background:#fff">
-          <div style="font-size:28px;margin-bottom:6px">🏪</div>
-          <div style="font-weight:700;font-size:13px;color:#2d6a4f">Vendor</div>
-          <div style="font-size:11px;color:#888;margin-top:2px">Supplier portal</div>
-        </div>
-      </div>
-
-      <!-- PIN entry (shown after role selected) -->
-      <div id="slPinBox" style="display:none;background:#fff8ee;border:2px solid var(--druk-border);border-radius:12px;padding:18px">
-        <div id="slRoleLabel" style="font-size:13px;font-weight:700;color:var(--druk-dark);margin-bottom:12px;text-align:center"></div>
-        <input type="hidden" id="sl_role" value="">
-        <div class="form-group" style="margin-bottom:14px">
-          <label>Enter PIN</label>
-          <input type="password" id="sl_pin" placeholder="••••" maxlength="8"
-            style="font-size:22px;letter-spacing:6px;text-align:center"
-            oninput="this.value=this.value.replace(/\\D/g,'')"
-            onkeydown="if(event.key==='Enter')staffLogin()">
-        </div>
-        <button class="btn btn-primary btn-block" onclick="staffLogin()">🔓 Sign In</button>
-        <button class="btn btn-outline btn-block" style="margin-top:8px" onclick="clearStaffRoleSelection()">← Change Role</button>
-      </div>
-    </div>`;
+    `;
 }
 
 function switchAuthTab(btn, id) {
   document.querySelectorAll('#authTabs .tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
-  ['signIn','signUp','staffTab'].forEach(n => {
+  ['signIn','signUp'].forEach(n => {
     const el = document.getElementById(n);
     if (el) el.style.display = n === id ? 'block' : 'none';
   });
@@ -7443,6 +7394,12 @@ function _showPrivacyNoticeIfNeeded() {
   updateCartCount();
   applyStaffSession();
   _showPrivacyNoticeIfNeeded();
+
+  // Check URL hash for staff portal trigger (e.g. yoursite.com/#staff)
+  if (window.location.hash === '#staff') {
+    history.replaceState(null, '', ' ');  // clean the URL
+    setTimeout(showStaffPortal, 500);
+  }
 
   // ── Landing gate: send guest straight to profile/login ──
   if (!db.user && !getStaffSession()) {
@@ -8175,7 +8132,8 @@ async function staffLogin() {
       return;
     }
     if (!account.pin) {
-      toast('⚠️ No Admin PIN set. Please set one in Dashboard → Staff & Accounts for security.', '#e67e22');
+      toast('⛔ Admin PIN not configured. Contact system administrator.', '#e74c3c');
+      return;
     }
   } else {
     if (!pin) { toast('⚠️ Please enter your PIN.', '#e67e22'); return; }
@@ -8241,14 +8199,36 @@ function updateNavForRole() {
       if (required === 'admin')  unlocked = session.role === 'admin';
       if (required === 'vendor') unlocked = session.role === 'admin' || session.role === 'chef' || session.role === 'vendor';
     }
+    // Completely hide protected buttons from non-staff (not just dim)
+    btn.style.display = unlocked ? '' : 'none';
     if (unlocked) {
       btn.classList.add('nav-unlocked');
       btn.textContent = btn.textContent.replace(' 🔒','').trim();
     } else {
       btn.classList.remove('nav-unlocked');
-      if (!btn.textContent.includes('🔒')) btn.textContent += ' 🔒';
     }
   });
+}
+
+// ── Secret staff portal trigger ──────────────────────────────────────────────
+let _logoTapCount = 0, _logoTapTimer = null;
+function _handleLogoTap() {
+  _logoTapCount++;
+  clearTimeout(_logoTapTimer);
+  if (_logoTapCount >= 5) {
+    _logoTapCount = 0;
+    showStaffPortal();
+    return;
+  }
+  _logoTapTimer = setTimeout(() => { _logoTapCount = 0; }, 2000);
+}
+
+function showStaffPortal() {
+  document.getElementById('staffPortalOverlay').style.display = 'flex';
+  renderStaffLoginCard();
+}
+function hideStaffPortal() {
+  document.getElementById('staffPortalOverlay').style.display = 'none';
 }
 
 function renderStaffLoginCard() {
@@ -12429,5 +12409,44 @@ function adminRemoveVendor(id) {
   if (sp && sp.offsetParent) renderStaffProfiles();
 }
 </script>
+
+<!-- ══════════════════════ STAFF PORTAL OVERLAY ══════════════════════ -->
+<div id="staffPortalOverlay" style="display:none;position:fixed;inset:0;z-index:99999;
+  background:rgba(0,0,0,0.85);backdrop-filter:blur(6px);
+  align-items:center;justify-content:center;padding:20px">
+  <div style="background:white;border-radius:18px;max-width:420px;width:100%;
+    box-shadow:0 20px 60px rgba(0,0,0,0.5);overflow:hidden;position:relative">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#1a1a2e,#2c3e50);padding:22px 24px;text-align:center">
+      <div style="font-size:36px;margin-bottom:6px">🔐</div>
+      <div style="color:#C9A84C;font-weight:900;font-size:18px;letter-spacing:1px">STAFF PORTAL</div>
+      <div style="color:rgba(255,255,255,0.6);font-size:12px;margin-top:3px">Zaemu Cafe — Restricted Access</div>
+    </div>
+    <!-- Close button -->
+    <button onclick="hideStaffPortal()"
+      style="position:absolute;top:12px;right:14px;background:rgba(255,255,255,0.15);
+             border:none;color:white;font-size:18px;cursor:pointer;border-radius:50%;
+             width:30px;height:30px;display:flex;align-items:center;justify-content:center">✕</button>
+    <!-- Login form -->
+    <div style="padding:24px" id="staffLoginPanel">
+      <div id="slRoleCards" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px"></div>
+      <input type="hidden" id="sl_role" value="">
+      <div id="slPinBox" style="margin-bottom:14px">
+        <label style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">PIN / Password</label>
+        <input type="password" id="sl_pin" placeholder="Enter PIN"
+          style="width:100%;padding:12px;border:1.5px solid #ddd;border-radius:8px;font-size:16px;text-align:center;letter-spacing:4px"
+          onkeydown="if(event.key==='Enter')staffLogin()">
+      </div>
+      <button class="btn btn-primary btn-block" onclick="staffLogin()">🔓 Access Staff Area</button>
+      <p style="text-align:center;font-size:11px;color:#aaa;margin-top:12px">
+        🔒 Authorised staff only. All access attempts are logged.
+      </p>
+    </div>
+    <!-- Logged in panel -->
+    <div style="padding:24px;display:none" id="staffLoggedPanel">
+      <div id="staffLoggedInfo"></div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
