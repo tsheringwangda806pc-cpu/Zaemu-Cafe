@@ -3407,6 +3407,98 @@ function isIdentified() {
 //  CUSTOMER PROFILE SECURITY
 // ══════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  SECURITY LAYER — SHA-256 passwords · rate limiting · graceful API fallback
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── SHA-256 password hashing (replaces insecure btoa encoding) ───────────────
+const _PASS_SALT = 'zaemu_cafe_v2_';   // site-specific static salt
+
+async function _sha256(str) {
+  try {
+    const encoded = new TextEncoder().encode(_PASS_SALT + str);
+    const buf     = await crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(buf))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return btoa(str); // safe fallback for very old browsers
+  }
+}
+
+// Verify password against stored hash — supports SHA-256 AND legacy btoa
+// If btoa match found, silently upgrades the record to SHA-256
+async function _matchPassword(plainPass, storedHash, profile) {
+  const sha = await _sha256(plainPass);
+  if (storedHash === sha) return true;                   // ✅ SHA-256 match
+  if (storedHash === btoa(plainPass)) {                  // 🔄 legacy btoa match
+    // Silently upgrade to SHA-256
+    if (profile) {
+      profile.password = sha;
+      const profiles = db.profiles;
+      const pi = profiles.findIndex(p => p.email === profile.email);
+      if (pi >= 0) { profiles[pi].password = sha; db.profiles = profiles; }
+      const cu = db.user;
+      if (cu && cu.email === profile.email) { cu.password = sha; db.user = cu; }
+    }
+    return true;
+  }
+  return false;                                          // ❌ no match
+}
+
+// Password strength checker — returns { score 0-4, label, colour }
+function _passwordStrength(pass) {
+  if (!pass) return { score: 0, label: '', colour: '#ddd' };
+  let s = 0;
+  if (pass.length >= 8)  s++;
+  if (pass.length >= 12) s++;
+  if (/[A-Z]/.test(pass) && /[a-z]/.test(pass)) s++;
+  if (/[0-9]/.test(pass)) s++;
+  if (/[^A-Za-z0-9]/.test(pass)) s++;
+  s = Math.min(s, 4);
+  const labels  = ['', 'Weak 🔴', 'Fair 🟠', 'Good 🟡', 'Strong 🟢'];
+  const colours = ['#ddd', '#e74c3c', '#e67e22', '#f1c40f', '#27ae60'];
+  return { score: s, label: labels[s], colour: colours[s] };
+}
+
+// Show/hide password toggle helper
+function _togglePwd(inputId, btn) {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  el.type = el.type === 'password' ? 'text' : 'password';
+  if (btn) btn.textContent = el.type === 'password' ? '👁️' : '🙈';
+}
+
+// ── Safe API caller — graceful fallback when no backend (Netlify static) ────
+async function _safeEmailSend(to, subject, html) {
+  const serverUrl = (load('retellServerUrl', '') || '').trim();
+  if (!serverUrl || serverUrl.includes('localhost') || !serverUrl.startsWith('http')) {
+    return { offline: true };   // no backend configured — skip silently
+  }
+  try {
+    const r = await fetch(serverUrl + '/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, subject, html }),
+      signal: AbortSignal.timeout(8000),
+    });
+    return await r.json();
+  } catch { return { error: true }; }
+}
+
+// ── Staff PIN rate-limiter (mirrors customer login limiter) ─────────────────
+const _staffAttempts = {};
+function _checkStaffLock(role) {
+  const rec = _staffAttempts[role];
+  return !!(rec && rec.lockedUntil && Date.now() < rec.lockedUntil);
+}
+function _recordStaffFail(role) {
+  const rec = _staffAttempts[role] || { count: 0, lockedUntil: 0 };
+  rec.count++;
+  if (rec.count >= 5) { rec.lockedUntil = Date.now() + 5 * 60 * 1000; rec.count = 0; }
+  _staffAttempts[role] = rec;
+}
+function _clearStaffAttempts(role) { delete _staffAttempts[role]; }
+
 // ── Login rate-limiter (in-memory; resets on page refresh) ─────────────────
 const _loginAttempts = {};   // email → { count, lockedUntil }
 const _LOGIN_MAX     = 5;
@@ -3926,14 +4018,14 @@ function switchCoTab(tab) {
   });
 }
 
-function coSignIn() {
+async function coSignIn() {
   const email = (document.getElementById('co_email')?.value || '').trim().toLowerCase();
   const pass  = document.getElementById('co_pass')?.value || '';
   if (!email || !pass) { toast('⚠️ Enter your email and password.', '#e67e22'); return; }
 
   const profiles = db.profiles;
-  const user = profiles.find(p => (p.email||'').toLowerCase() === email && p.password === btoa(pass));
-  if (!user) {
+  const user = profiles.find(p => (p.email||'').toLowerCase() === email);
+  if (!user || !(await _matchPassword(pass, user.password, user))) {
     toast('❌ Incorrect email or password.', '#e74c3c');
     const box = document.getElementById('co_pass');
     if (box) { box.style.outline = '2px solid #e74c3c'; setTimeout(() => box.style.outline='', 1500); }
@@ -4032,19 +4124,19 @@ function switchPgTab(tab) {
   });
 }
 
-function pgSignIn() {
+async function pgSignIn() {
   const email = (document.getElementById('pg_email')?.value || '').trim().toLowerCase();
   const pass  =  document.getElementById('pg_pass')?.value  || '';
   if (!email || !pass) { toast('⚠️ Enter your email and password.', '#e67e22'); return; }
 
-  // ── Rate-limit guard ──────────────────────────────
   if (_checkLoginLock(email)) {
-    toast('🔒 Too many failed attempts. Account locked for 5 minutes. Please try again later.', '#e74c3c');
+    toast('🔒 Too many failed attempts. Account locked for 5 minutes.', '#e74c3c');
     return;
   }
 
-  const user = db.profiles.find(p => (p.email||'').toLowerCase() === email && p.password === btoa(pass));
-  if (!user) {
+  const profiles = db.profiles;
+  const user = profiles.find(p => (p.email||'').toLowerCase() === email);
+  if (!user || !(await _matchPassword(pass, user.password, user))) {
     const rec  = _recordLoginFail(email);
     const left = _loginAttemptsLeft(email);
     const lockMsg = (rec.lockedUntil && Date.now() < rec.lockedUntil)
@@ -4059,8 +4151,7 @@ function pgSignIn() {
   _clearLoginAttempts(email);
   user.loginTime = new Date().toISOString();
   db.user = user;
-  const profiles = db.profiles;
-  const pi = profiles.findIndex(p => p.email === user.email);
+  const pi = profiles.findIndex(p => (p.email||'').toLowerCase() === email);
   if (pi >= 0) { profiles[pi].loginTime = user.loginTime; db.profiles = profiles; }
   updateHeaderBtn(user);
   _resetInactivityTimer();
@@ -4361,22 +4452,12 @@ function confirmPayment() {
 
 /** Silently send a branded invoice email after order placement */
 async function autoSendInvoiceEmail(order, toEmail) {
-  const serverUrl = load('retellServerUrl', 'http://localhost:3000');
-  const cafe      = loadCafeSettings();
-  try {
-    await fetch(serverUrl + '/api/send-email', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to:      toEmail,
-        subject: `🧾 Invoice #${order.id} — ${cafe.name||'Zaemu Cafe'}`,
-        html:    buildInvoiceHtml(order, cafe),
-      }),
-    });
-    console.log(`[Invoice] Auto-sent to ${toEmail} for order ${order.id}`);
-  } catch (e) {
-    console.warn('[Invoice] Auto-send failed (server may be offline):', e.message);
-  }
+  const cafe = loadCafeSettings();
+  await _safeEmailSend(
+    toEmail,
+    `🧾 Invoice #${order.id} — ${cafe.name||'Zaemu Cafe'}`,
+    buildInvoiceHtml(order, cafe)
+  );
 }
 
 // ─── BOOKING ──────────────────────────────────────
@@ -4964,14 +5045,14 @@ function confirmDelivery(orderId, delivered) {
 }
 
 // ── Delivery gate helpers ─────────────────────────────────────────────────────
-function deliveryGateSignIn() {
+async function deliveryGateSignIn() {
   const email = (document.getElementById('dg_email')?.value || '').trim().toLowerCase();
   const pass  = document.getElementById('dg_pass')?.value || '';
   if (!email || !pass) { toast('⚠️ Enter email and password.', '#e67e22'); return; }
 
   const profiles = db.profiles;
-  const user = profiles.find(p => (p.email||'').toLowerCase() === email && p.password === btoa(pass));
-  if (!user) {
+  const user = profiles.find(p => (p.email||'').toLowerCase() === email);
+  if (!user || !(await _matchPassword(pass, user.password, user))) {
     toast('❌ Incorrect email or password.', '#e74c3c');
     const box = document.getElementById('dg_pass');
     if (box) { box.style.outline = '2px solid #e74c3c'; setTimeout(() => box.style.outline = '', 1500); }
@@ -4979,8 +5060,9 @@ function deliveryGateSignIn() {
   }
   db.user = user;
   updateHeaderBtn(user);
+  _resetInactivityTimer();
   toast(`👋 Welcome back, ${user.name}! 🐉`, 'var(--druk-gold)');
-  renderDelivery();   // re-render with user signed in
+  renderDelivery();
   renderOrderHistory();
 }
 
@@ -5344,20 +5426,17 @@ async function sendAdminFeedbackReply(fbIdx) {
   db.feedback = feedbacks;
   // Send email if we have an address
   if (toEmail) {
-    const serverUrl = load('retellServerUrl', 'http://localhost:3000');
-    try {
-      await fetch(serverUrl + '/api/send-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: toEmail,
-          subject: `💬 Response to your feedback — ${loadCafeSettings().name || 'Zaemu Cafe'}`,
-          html: buildAdminReplyHtml(fb, reply),
-        }),
-      });
+    const result = await _safeEmailSend(
+      toEmail,
+      `💬 Response to your feedback — ${loadCafeSettings().name || 'Zaemu Cafe'}`,
+      buildAdminReplyHtml(fb, reply)
+    );
+    if (result.offline) {
+      toast('💾 Reply saved. Email unavailable — no backend configured.', '#e67e22');
+    } else if (result.error) {
+      toast('💾 Reply saved — email failed to send.', '#e74c3c');
+    } else {
       toast(`📧 Reply sent to ${toEmail}!`, '#27ae60');
-    } catch(e) {
-      toast('Reply saved — email failed. Check server.', '#e74c3c');
     }
   }
   renderFeedbackTab();
@@ -5365,19 +5444,12 @@ async function sendAdminFeedbackReply(fbIdx) {
 
 async function autoSendFeedbackAck(fb) {
   const toEmail = fb.userEmail || fb.email;
-  if (!toEmail) return;   // no address → silent skip
-  const serverUrl = load('retellServerUrl', 'http://localhost:3000');
-  try {
-    await fetch(serverUrl + '/api/send-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: toEmail,
-        subject: `🙏 Thank you for your feedback — ${loadCafeSettings().name || 'Zaemu Cafe'}`,
-        html: buildFeedbackAutoReplyHtml(fb),
-      }),
-    });
-  } catch(e) { /* silent — don't block the UI */ }
+  if (!toEmail) return;
+  await _safeEmailSend(
+    toEmail,
+    `🙏 Thank you for your feedback — ${loadCafeSettings().name || 'Zaemu Cafe'}`,
+    buildFeedbackAutoReplyHtml(fb)
+  );
 }
 
 function submitFeedback() {
@@ -6811,6 +6883,28 @@ function renderProfile() {
         🔒 Update Password
       </button>
 
+      <!-- ── Privacy & Data Controls ── -->
+      <div class="divider" style="margin-top:24px"></div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <h3 style="color:var(--druk-dark);margin:0">🔐 Privacy &amp; Data</h3>
+      </div>
+      <div style="background:#f8f9fa;border:1px solid #e0e0e0;border-radius:10px;padding:14px 16px;font-size:13px;color:#555;margin-bottom:14px;line-height:1.7">
+        <strong style="color:var(--druk-dark)">Your data stays on your device.</strong><br>
+        All profile information, orders and bookings are stored locally in your browser only.
+        We never share your personal data with third parties.<br>
+        <span style="font-size:11px;color:#aaa">📍 Data stored: name, email, phone, order history, booking history.</span>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-outline" onclick="exportMyData()"
+          style="border-color:#2980b9;color:#2980b9">
+          📥 Download My Data
+        </button>
+        <button class="btn btn-sm btn-outline" onclick="deleteMyAccount()"
+          style="border-color:#e74c3c;color:#e74c3c">
+          🗑️ Delete My Account
+        </button>
+      </div>
+
       <div class="divider" style="margin-top:20px"></div>
 
       <!-- Active delivery status (if any) -->
@@ -7030,20 +7124,23 @@ function clearStaffRoleSelection() {
   if (roleInput) roleInput.value = '';
 }
 
-function signUp() {
-  const name = document.getElementById('su_name').value.trim();
-  const phone = document.getElementById('su_phone').value.trim();
-  const email = document.getElementById('su_email').value.trim();
-  const pass = document.getElementById('su_pass').value;
+async function signUp() {
+  const name     = document.getElementById('su_name').value.trim();
+  const phone    = document.getElementById('su_phone').value.trim();
+  const email    = document.getElementById('su_email').value.trim().toLowerCase();
+  const pass     = document.getElementById('su_pass').value;
   const location = document.getElementById('su_loc').value;
 
-  if (!name || !email || !pass) { toast('Please fill all required fields!', '#e74c3c'); return; }
+  if (!name || !email || !pass) { toast('⚠️ Please fill all required fields!', '#e74c3c'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('⚠️ Please enter a valid email address.', '#e74c3c'); return; }
+  if (pass.length < 8) { toast('⚠️ Password must be at least 8 characters.', '#e74c3c'); return; }
 
   const profiles = db.profiles;
-  if (profiles.find(p => p.email === email)) { toast('Email already registered!', '#e74c3c'); return; }
+  if (profiles.find(p => (p.email||'').toLowerCase() === email)) { toast('⚠️ Email already registered!', '#e74c3c'); return; }
 
+  const hashedPass = await _sha256(pass);
   const now  = new Date().toISOString();
-  const user = { name, phone, email, password: btoa(pass), location, joined: now, loginTime: now, totalOrders: 0, totalSpent: 0, favDish: '' };
+  const user = { name, phone, email, password: hashedPass, location, joined: now, loginTime: now, totalOrders: 0, totalSpent: 0, favDish: '' };
   profiles.push(user);
   db.profiles = profiles;
   db.user = user;
@@ -7057,7 +7154,7 @@ function signUp() {
   if (document.getElementById('tab-profiles')?.style.display !== 'none') renderProfilesTab();
 }
 
-function signIn() {
+async function signIn() {
   const email = document.getElementById('si_email').value.trim().toLowerCase();
   const pass  = document.getElementById('si_pass').value;
   if (!email || !pass) { toast('⚠️ Please enter your email and password.', '#e67e22'); return; }
@@ -7069,12 +7166,9 @@ function signIn() {
   }
 
   const profiles = db.profiles;
-  // Match by email (case-insensitive) AND correct password hash
-  const user = profiles.find(p =>
-    (p.email||'').toLowerCase() === email && p.password === btoa(pass)
-  );
+  const profile  = profiles.find(p => (p.email||'').toLowerCase() === email);
 
-  if (!user) {
+  if (!profile || !(await _matchPassword(pass, profile.password, profile))) {
     const rec  = _recordLoginFail(email);
     const left = _loginAttemptsLeft(email);
     const lockMsg = (rec.lockedUntil && Date.now() < rec.lockedUntil)
@@ -7087,14 +7181,13 @@ function signIn() {
 
   // ── Successful login ──────────────────────────────
   _clearLoginAttempts(email);
-  user.loginTime = new Date().toISOString();
-  db.user = user;
-  // Persist loginTime in profiles list
-  const pi = profiles.findIndex(p => p.email === user.email);
-  if (pi >= 0) { profiles[pi].loginTime = user.loginTime; db.profiles = profiles; }
-  updateHeaderBtn(user);
+  profile.loginTime = new Date().toISOString();
+  db.user = profile;
+  const pi = profiles.findIndex(p => (p.email||'').toLowerCase() === email);
+  if (pi >= 0) { profiles[pi].loginTime = profile.loginTime; db.profiles = profiles; }
+  updateHeaderBtn(profile);
   _resetInactivityTimer();
-  toast(`👋 Welcome back, ${user.name}! 🐉`, 'var(--druk-gold)');
+  toast(`👋 Welcome back, ${profile.name}! 🐉`, 'var(--druk-gold)');
   showPage('home');
 }
 
@@ -7219,7 +7312,7 @@ function checkPassStrength(val) {
 }
 
 // ─── CUSTOMER PASSWORD CHANGE ───────────────────────────────────────────────
-function changeCustomerPassword() {
+async function changeCustomerPassword() {
   const user    = db.user;
   if (!user) return;
   const cur     = document.getElementById('p_cur_pass')?.value;
@@ -7227,11 +7320,11 @@ function changeCustomerPassword() {
   const confirm = document.getElementById('p_confirm_pass')?.value;
 
   if (!cur || !next || !confirm) { toast('⚠️ Fill all three password fields.', '#e67e22'); return; }
-  if (user.password !== btoa(cur)) { toast('❌ Current password is incorrect.', '#e74c3c'); return; }
-  if (next.length < 6) { toast('⚠️ New password must be at least 6 characters.', '#e67e22'); return; }
+  if (!(await _matchPassword(cur, user.password, user))) { toast('❌ Current password is incorrect.', '#e74c3c'); return; }
+  if (next.length < 8) { toast('⚠️ New password must be at least 8 characters.', '#e67e22'); return; }
   if (next !== confirm) { toast('⚠️ New passwords do not match.', '#e67e22'); return; }
 
-  user.password = btoa(next);
+  user.password = await _sha256(next);
   db.user = user;
   const profiles = db.profiles;
   const pi = profiles.findIndex(p => p.email === user.email);
@@ -7245,15 +7338,90 @@ function changeCustomerPassword() {
 }
 
 function logout() {
-  clearTimeout(_inactivityTimer);   // stop inactivity watcher
+  clearTimeout(_inactivityTimer);
   db.user = null;
-  window._pgGuestName  = '';        // clear guest session
+  window._pgGuestName  = '';
   window._pgGuestPhone = '';
-  state.cart = [];                  // clear cart on logout for privacy
+  state.cart        = [];
+  state.activeOrder = null;
+  state.activeBooking = null;
   updateCartCount();
   updateHeaderBtn(null);
   toast('👋 Signed out. See you soon!');
-  showPage('profile');   // return to login screen
+  showPage('profile');
+}
+
+// ── Privacy: Export my data as JSON download ──────────────────────────────
+function exportMyData() {
+  const user = db.user;
+  if (!user) return;
+  const myOrders   = (db.orders  ||[]).filter(o => o.userEmail === user.email);
+  const myBookings = (db.bookings||[]).filter(b => b.customerEmail === user.email || (b.customer||'').toLowerCase() === (user.name||'').toLowerCase());
+  const myFeedback = (db.feedback||[]).filter(f => f.userEmail === user.email);
+  const exportData = {
+    profile:  { name: user.name, email: user.email, phone: user.phone, location: user.location, joined: user.joined },
+    orders:   myOrders,
+    bookings: myBookings,
+    feedback: myFeedback,
+    exportedAt: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `zaemu-cafe-my-data-${Date.now()}.json`;
+  a.click();
+  toast('📥 Your data has been downloaded.', '#27ae60');
+}
+
+// ── Privacy: Delete account & all personal data ───────────────────────────
+function deleteMyAccount() {
+  const user = db.user;
+  if (!user) return;
+  if (!confirm(`⚠️ Delete your account?\n\nThis will permanently remove:\n• Your profile\n• Your order history\n• Your bookings\n\nThis cannot be undone.`)) return;
+  // Remove profile
+  db.profiles = (db.profiles||[]).filter(p => p.email !== user.email);
+  // Anonymise orders (keep for cafe records but strip personal data)
+  db.orders = (db.orders||[]).map(o =>
+    o.userEmail === user.email ? { ...o, userEmail: '', customer: 'Deleted User' } : o
+  );
+  // Remove bookings
+  db.bookings = (db.bookings||[]).filter(b =>
+    b.customerEmail !== user.email &&
+    (b.customer||'').toLowerCase() !== (user.name||'').toLowerCase()
+  );
+  // Remove feedback
+  db.feedback = (db.feedback||[]).filter(f => f.userEmail !== user.email);
+  logout();
+  toast('🗑️ Your account and personal data have been deleted.', '#888');
+}
+
+// ── First-visit privacy notice ────────────────────────────────────────────
+function _showPrivacyNoticeIfNeeded() {
+  if (load('privacyAccepted', false)) return;
+  const notice = document.createElement('div');
+  notice.id = 'privacyNotice';
+  notice.style.cssText = `
+    position:fixed;bottom:0;left:0;right:0;z-index:9999;
+    background:linear-gradient(135deg,var(--druk-dark),#1a1a2e);
+    color:white;padding:14px 20px;display:flex;align-items:center;
+    justify-content:space-between;gap:14px;flex-wrap:wrap;
+    box-shadow:0 -4px 20px rgba(0,0,0,0.4);font-size:13px`;
+  notice.innerHTML = `
+    <div style="flex:1;min-width:220px">
+      🍪 <strong style="color:var(--druk-gold)">Your Privacy Matters</strong><br>
+      <span style="opacity:.8;font-size:12px">
+        Zaemu Cafe stores your data locally on your device only.
+        No tracking, no third-party cookies. Your info stays private.
+      </span>
+    </div>
+    <div style="display:flex;gap:8px;flex-shrink:0">
+      <button onclick="save('privacyAccepted',true);document.getElementById('privacyNotice').remove()"
+        style="background:var(--druk-gold);color:var(--druk-dark);border:none;border-radius:8px;
+               padding:8px 18px;font-weight:800;cursor:pointer;font-size:13px">
+        ✅ Got it
+      </button>
+    </div>`;
+  document.body.appendChild(notice);
 }
 
 // ─── INIT ─────────────────────────────────────────
@@ -7274,6 +7442,7 @@ function logout() {
 
   updateCartCount();
   applyStaffSession();
+  _showPrivacyNoticeIfNeeded();
 
   // ── Landing gate: send guest straight to profile/login ──
   if (!db.user && !getStaffSession()) {
@@ -7968,39 +8137,61 @@ function getStaffSession() {
   return load('staffSession', null);
 }
 
-function staffLogin() {
+async function staffLogin() {
   const role = document.getElementById('sl_role')?.value?.trim();
-  const pin  = document.getElementById('sl_pin')?.value.trim();
+  const pin  = (document.getElementById('sl_pin')?.value || '').trim();
 
   if (!role) { toast('⚠️ Please select a role first.', '#e67e22'); return; }
+
+  // Rate-limit check
+  if (_checkStaffLock(role)) {
+    toast('🔒 Too many failed attempts. Staff access locked for 5 minutes.', '#e74c3c');
+    return;
+  }
 
   const accounts = getStaffAccounts();
   const account  = accounts[role];
 
-  // ── Admin is always PIN-free ──────────────────────────────
+  // PIN verifier — supports hashed and legacy plain-text PINs
+  async function _pinMatches(entered, stored) {
+    if (!stored) return !entered;          // no PIN set
+    const hashedEntered = await _sha256('pin_' + entered);
+    if (stored === hashedEntered) return true;          // SHA-256 match
+    if (stored === entered) {                           // legacy plain-text — migrate
+      accounts[role].pin = hashedEntered;
+      save('staffAccounts', accounts);
+      return true;
+    }
+    return false;
+  }
+
   if (role === 'admin') {
-    // If a PIN has been set, honour it; otherwise let admin in freely
-    if (account.pin && pin !== account.pin) {
+    // Admin: if PIN set, must match; if no PIN set, warn to set one
+    if (account.pin && !(await _pinMatches(pin, account.pin))) {
+      _recordStaffFail(role);
       toast('❌ Incorrect Admin PIN. Try again.', '#e74c3c');
       const box = document.getElementById('slPinBox');
       if (box) { box.style.animation = 'none'; void box.offsetWidth; box.style.animation = 'shake .3s ease'; }
       return;
     }
-    // No PIN set OR correct PIN entered → grant access
+    if (!account.pin) {
+      toast('⚠️ No Admin PIN set. Please set one in Dashboard → Staff & Accounts for security.', '#e67e22');
+    }
   } else {
-    // Chef / Vendor must have a PIN configured and must enter it
     if (!pin) { toast('⚠️ Please enter your PIN.', '#e67e22'); return; }
     if (!account || !account.pin) {
-      toast('⚠️ No PIN set for this role. Ask Admin to set it in Dashboard → Staff & Accounts Management.', '#e67e22');
+      toast('⚠️ No PIN set for this role. Ask Admin to configure it.', '#e67e22');
       return;
     }
-    if (account.pin !== pin) {
+    if (!(await _pinMatches(pin, account.pin))) {
+      _recordStaffFail(role);
       toast('❌ Incorrect PIN. Try again.', '#e74c3c');
       const box = document.getElementById('slPinBox');
       if (box) { box.style.animation = 'none'; void box.offsetWidth; box.style.animation = 'shake .3s ease'; }
       return;
     }
   }
+  _clearStaffAttempts(role);
 
   const defaultName = role === 'admin' ? 'Admin' : role === 'chef' ? 'Head Chef' : 'Vendor';
   const session = { role, name: account.name || defaultName, ...account };
