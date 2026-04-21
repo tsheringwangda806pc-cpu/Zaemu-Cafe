@@ -15,7 +15,7 @@ const crypto     = require('crypto');
 const nodemailer = require('nodemailer');
 
 const app  = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data.json');
 
 app.use(cors());
@@ -101,8 +101,9 @@ app.get('/api/settings', (_req, res) => {
 let mailer = null;
 
 function buildMailer(settings) {
-  const user = settings?.gmailUser;
-  const pass = settings?.gmailAppPass;
+  // Prefer environment variables (for cloud deployment), fall back to data.json settings
+  const user = process.env.GMAIL_USER || settings?.gmailUser;
+  const pass = process.env.GMAIL_PASS || settings?.gmailAppPass;
   if (!user || !pass || pass === '••••••••') return;
   mailer = nodemailer.createTransport({
     service: 'gmail',
@@ -111,7 +112,7 @@ function buildMailer(settings) {
   console.log(`[Gmail] mailer configured for ${user}`);
 }
 
-// Build on startup with saved settings
+// Build on startup with saved settings (env vars take priority)
 buildMailer(readData().settings || {});
 
 async function sendBookingEmails(booking, settings) {
@@ -206,6 +207,37 @@ app.post('/api/test-gmail', async (req, res) => {
     res.json({ success: true, message: `Test email sent to ${owner}` });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────
+//  GENERIC EMAIL SEND  (invoice, gift card, etc.)
+//  POST /api/send-email { to, subject, html, cc? }
+// ─────────────────────────────────────────────────
+app.post('/api/send-email', async (req, res) => {
+  const { to, subject, html, cc } = req.body;
+  if (!to || !subject || !html) {
+    return res.status(400).json({ error: 'Missing required fields: to, subject, html' });
+  }
+  if (!mailer) {
+    return res.status(503).json({ error: 'Gmail not configured. Save your Gmail App Password in Cafe Settings first.' });
+  }
+  const data  = readData();
+  const owner = data.settings?.gmailUser || '';
+  try {
+    const mailOpts = {
+      from:    `"🍽️ Zaemu Cafe" <${owner}>`,
+      to,
+      subject,
+      html,
+    };
+    if (cc) mailOpts.cc = cc;
+    await mailer.sendMail(mailOpts);
+    console.log(`[Email] Sent "${subject}" → ${to}`);
+    res.json({ success: true, message: `Email sent to ${to}` });
+  } catch (err) {
+    console.error('[Email] Send error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
