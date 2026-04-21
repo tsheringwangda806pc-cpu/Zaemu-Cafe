@@ -1296,7 +1296,7 @@
 
 <header>
   <div class="header-top">
-    <div class="logo" onclick="_handleLogoTap();showPage('home')" style="cursor:pointer" title="Go to Home">
+    <div class="logo" onclick="showPage('home')" style="cursor:pointer" title="Go to Home">
       <div class="logo-icon">
         <img src="logo.jpg" alt="Zaemu Cafe Logo" draggable="false">
       </div>
@@ -6966,14 +6966,15 @@ function renderProfile() {
     </div>
 
     <div class="tabs" id="authTabs">
-      <button class="tab active" onclick="switchAuthTab(this,'signIn')">Sign In</button>
-      <button class="tab" onclick="switchAuthTab(this,'signUp')">Create Account</button>
+      <button class="tab active" onclick="switchAuthTab(this,'signIn')">🔑 Sign In</button>
+      <button class="tab" onclick="switchAuthTab(this,'signUp')">✏️ Register</button>
+      <button class="tab" onclick="switchAuthTab(this,'staffTab')">👑 Staff</button>
     </div>
 
     <!-- Customer Sign In -->
     <div id="signIn">
       <div class="form-group"><label>Email</label>
-        <input type="email" id="si_email" placeholder="your@email.com"></div>
+        <input type="email" id="si_email" placeholder="your@email.com" autocomplete="email"></div>
       <div class="form-group"><label>Password</label>
         <input type="password" id="si_pass" placeholder="••••••••"
           onkeydown="if(event.key==='Enter')signIn()"></div>
@@ -6990,7 +6991,7 @@ function renderProfile() {
       </div>
       <div class="form-group"><label>Email</label>
         <input type="email" id="su_email" placeholder="your@email.com"></div>
-      <div class="form-group"><label>Password</label>
+      <div class="form-group"><label>Password <span style="color:#aaa;font-weight:400;font-size:11px">(min. 8 characters)</span></label>
         <input type="password" id="su_pass" placeholder="••••••••"></div>
       <div class="form-group"><label>Location / Dzongkhag</label>
         <select id="su_loc">
@@ -7002,62 +7003,95 @@ function renderProfile() {
       <button class="btn btn-primary btn-block" onclick="signUp()">✅ Create Account</button>
     </div>
 
+    <!-- Staff Login -->
+    <div id="staffTab" style="display:none">
+      <div style="background:linear-gradient(135deg,#1a1a2e,#2c3e50);border-radius:12px;
+                  padding:14px 16px;margin-bottom:16px;text-align:center">
+        <div style="font-size:28px;margin-bottom:4px">🔐</div>
+        <div style="color:#C9A84C;font-weight:800;font-size:14px">Staff Access</div>
+        <div style="color:rgba(255,255,255,0.6);font-size:11px;margin-top:2px">
+          Select your role and enter your PIN
+        </div>
+      </div>
+
+      <!-- Role cards -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px"
+           id="slRoleCards"></div>
+      <input type="hidden" id="sl_role" value="">
+
+      <!-- PIN input -->
+      <div id="slPinBox" style="margin-bottom:14px">
+        <label style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">
+          🔑 PIN / Password
+        </label>
+        <input type="password" id="sl_pin" placeholder="Enter your PIN"
+          style="text-align:center;letter-spacing:3px;font-size:16px"
+          onkeydown="if(event.key==='Enter')staffLogin()">
+      </div>
+      <button class="btn btn-primary btn-block" onclick="staffLogin()"
+        style="background:linear-gradient(135deg,#1a1a2e,#2c3e50);border-color:#2c3e50">
+        🔓 Access Staff Area
+      </button>
+      <p style="text-align:center;font-size:11px;color:#aaa;margin-top:10px">
+        🛡️ Authorised staff only · 5 failed attempts = 5 min lockout
+      </p>
+    </div>
+
     `;
 }
 
 function switchAuthTab(btn, id) {
   document.querySelectorAll('#authTabs .tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
-  ['signIn','signUp'].forEach(n => {
+  ['signIn','signUp','staffTab'].forEach(n => {
     const el = document.getElementById(n);
     if (el) el.style.display = n === id ? 'block' : 'none';
   });
+  // Render role cards when staff tab opens
+  if (id === 'staffTab') renderStaffRoleCards();
+}
+
+function renderStaffRoleCards() {
+  const container = document.getElementById('slRoleCards');
+  if (!container) return;
+  const roles = [
+    { id:'admin',  icon:'👑',  label:'Admin',  accent:'#1a1a2e', bg:'#eef0f8' },
+    { id:'chef',   icon:'👨‍🍳', label:'Chef',   accent:'var(--druk-red)', bg:'#fff0f0' },
+    { id:'vendor', icon:'🏪',  label:'Vendor', accent:'#2d6a4f', bg:'#d8f3dc' },
+  ];
+  container.innerHTML = roles.map(r => `
+    <div id="slCard_${r.id}" class="sl-role-card"
+      onclick="selectStaffRole('${r.id}')"
+      style="border:2px solid #e0e0e0;border-radius:12px;padding:14px 8px;
+             text-align:center;cursor:pointer;transition:all .18s;background:white">
+      <div style="font-size:28px;margin-bottom:5px">${r.icon}</div>
+      <div style="font-size:12px;font-weight:800;color:#444">${r.label}</div>
+    </div>`).join('');
+  // Reset form
+  const ri = document.getElementById('sl_role'); if (ri) ri.value = '';
+  const pf = document.getElementById('sl_pin');  if (pf) { pf.value = ''; }
 }
 
 function selectStaffRole(role) {
-  // Highlight chosen card
+  // Highlight selected card
+  const accents = { admin:'#1a1a2e', chef:'var(--druk-red)', vendor:'#2d6a4f' };
+  const bgs     = { admin:'#eef0f8', chef:'#fff0f0', vendor:'#d8f3dc' };
   document.querySelectorAll('.sl-role-card').forEach(c => {
-    c.style.border = '2px solid #ddd';
-    c.style.background = '#fff';
+    c.style.border = '2px solid #e0e0e0';
+    c.style.background = 'white';
     c.style.transform = '';
   });
   const card = document.getElementById('slCard_' + role);
   if (card) {
-    const accent = role === 'admin' ? '#1a1a2e' : role === 'chef' ? 'var(--druk-red)' : '#2d6a4f';
-    card.style.border = `2px solid ${accent}`;
-    card.style.background = role === 'admin' ? '#f0f0f8' : role === 'chef' ? '#fff0f0' : '#d8f3dc';
+    card.style.border = `2px solid ${accents[role]}`;
+    card.style.background = bgs[role];
     card.style.transform = 'scale(1.05)';
   }
-
-  // Set hidden input
+  // Store selected role
   const roleInput = document.getElementById('sl_role');
   if (roleInput) roleInput.value = role;
-
-  // Update label & PIN hint
-  const label = document.getElementById('slRoleLabel');
-  const icons  = { admin:'👑', chef:'👨‍🍳', vendor:'🏪' };
-  const names  = { admin:'Admin', chef:'Head Chef', vendor:'Vendor / Supplier' };
-  if (label) {
-    label.innerHTML = role === 'admin'
-      ? `👑 Admin <span style="font-size:11px;background:#d8f3dc;color:#1b4332;border-radius:8px;padding:2px 8px;margin-left:6px;font-weight:700">PIN optional</span>`
-      : `${icons[role]} ${names[role]} — Enter your PIN`;
-  }
-
-  // Show or hide the PIN field based on role
+  // Focus PIN field
   const pinField = document.getElementById('sl_pin');
-  const pinGroup = pinField?.closest('.form-group');
-  if (role === 'admin') {
-    // Admin: show field but mark optional
-    if (pinGroup) pinGroup.style.opacity = '.6';
-    if (pinField) { pinField.placeholder = 'Leave blank to enter freely'; }
-  } else {
-    if (pinGroup) pinGroup.style.opacity = '1';
-    if (pinField) { pinField.placeholder = '••••'; }
-  }
-
-  // Show PIN box, clear previous PIN
-  const box = document.getElementById('slPinBox');
-  if (box) box.style.display = 'block';
   if (pinField) { pinField.value = ''; pinField.focus(); }
 }
 
@@ -7394,12 +7428,6 @@ function _showPrivacyNoticeIfNeeded() {
   updateCartCount();
   applyStaffSession();
   _showPrivacyNoticeIfNeeded();
-
-  // Check URL hash for staff portal trigger (e.g. yoursite.com/#staff)
-  if (window.location.hash === '#staff') {
-    history.replaceState(null, '', ' ');  // clean the URL
-    setTimeout(showStaffPortal, 500);
-  }
 
   // ── Landing gate: send guest straight to profile/login ──
   if (!db.user && !getStaffSession()) {
@@ -8210,28 +8238,13 @@ function updateNavForRole() {
   });
 }
 
-// ── Secret staff portal trigger ──────────────────────────────────────────────
-let _logoTapCount = 0, _logoTapTimer = null;
-function _handleLogoTap() {
-  _logoTapCount++;
-  clearTimeout(_logoTapTimer);
-  if (_logoTapCount >= 5) {
-    _logoTapCount = 0;
-    showStaffPortal();
-    return;
-  }
-  _logoTapTimer = setTimeout(() => { _logoTapCount = 0; }, 2000);
-}
-
-function showStaffPortal() {
-  document.getElementById('staffPortalOverlay').style.display = 'flex';
-  renderStaffLoginCard();
-}
-function hideStaffPortal() {
-  document.getElementById('staffPortalOverlay').style.display = 'none';
-}
-
+// ── Staff login card (staff profile now rendered inline via renderProfile) ────
 function renderStaffLoginCard() {
+  // Staff profile/login is handled directly by renderProfile().
+  // This stub exists only so legacy call-sites (saveStaffProfile) don't error.
+  renderProfile();
+  return;
+  // ── dead code below kept for reference only ──────────────────────────────
   const session = getStaffSession();
   const login   = document.getElementById('staffLoginPanel');
   const logged  = document.getElementById('staffLoggedPanel');
@@ -8371,7 +8384,6 @@ function saveStaffProfile() {
   save('staffSession', updated);
 
   applyStaffSession();
-  renderStaffLoginCard();
   renderProfile(); // Refresh profile page
 
   const roleNames = { admin:'Admin', chef:'Chef', vendor:'Vendor' };
@@ -12410,43 +12422,5 @@ function adminRemoveVendor(id) {
 }
 </script>
 
-<!-- ══════════════════════ STAFF PORTAL OVERLAY ══════════════════════ -->
-<div id="staffPortalOverlay" style="display:none;position:fixed;inset:0;z-index:99999;
-  background:rgba(0,0,0,0.85);backdrop-filter:blur(6px);
-  align-items:center;justify-content:center;padding:20px">
-  <div style="background:white;border-radius:18px;max-width:420px;width:100%;
-    box-shadow:0 20px 60px rgba(0,0,0,0.5);overflow:hidden;position:relative">
-    <!-- Header -->
-    <div style="background:linear-gradient(135deg,#1a1a2e,#2c3e50);padding:22px 24px;text-align:center">
-      <div style="font-size:36px;margin-bottom:6px">🔐</div>
-      <div style="color:#C9A84C;font-weight:900;font-size:18px;letter-spacing:1px">STAFF PORTAL</div>
-      <div style="color:rgba(255,255,255,0.6);font-size:12px;margin-top:3px">Zaemu Cafe — Restricted Access</div>
-    </div>
-    <!-- Close button -->
-    <button onclick="hideStaffPortal()"
-      style="position:absolute;top:12px;right:14px;background:rgba(255,255,255,0.15);
-             border:none;color:white;font-size:18px;cursor:pointer;border-radius:50%;
-             width:30px;height:30px;display:flex;align-items:center;justify-content:center">✕</button>
-    <!-- Login form -->
-    <div style="padding:24px" id="staffLoginPanel">
-      <div id="slRoleCards" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px"></div>
-      <input type="hidden" id="sl_role" value="">
-      <div id="slPinBox" style="margin-bottom:14px">
-        <label style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">PIN / Password</label>
-        <input type="password" id="sl_pin" placeholder="Enter PIN"
-          style="width:100%;padding:12px;border:1.5px solid #ddd;border-radius:8px;font-size:16px;text-align:center;letter-spacing:4px"
-          onkeydown="if(event.key==='Enter')staffLogin()">
-      </div>
-      <button class="btn btn-primary btn-block" onclick="staffLogin()">🔓 Access Staff Area</button>
-      <p style="text-align:center;font-size:11px;color:#aaa;margin-top:12px">
-        🔒 Authorised staff only. All access attempts are logged.
-      </p>
-    </div>
-    <!-- Logged in panel -->
-    <div style="padding:24px;display:none" id="staffLoggedPanel">
-      <div id="staffLoggedInfo"></div>
-    </div>
-  </div>
-</div>
 </body>
 </html>
