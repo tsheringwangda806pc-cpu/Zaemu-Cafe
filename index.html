@@ -3327,69 +3327,106 @@ function load(key, def) { const v = localStorage.getItem('zaemu_' + key); return
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  FIREBASE CLOUD SYNC  — orders / bookings / profiles / feedback
-//  Syncs all devices in real-time so every customer order appears on the
-//  admin dashboard instantly, regardless of which phone/browser placed it.
+//
+//  Architecture: each record is its own Firestore document so writes from
+//  different devices NEVER overwrite each other.
+//
+//  Collections (top-level):
+//    zc_orders/{order.id}
+//    zc_bookings/{booking.id}
+//    zc_profiles/{email-safe}
+//    zc_feedback/{fid}
 // ══════════════════════════════════════════════════════════════════════════════
-const _SYNC_KEYS = ['orders', 'bookings', 'profiles', 'feedback'];
-const _SYNC_COLL = 'zaemu_cafe';   // Firestore collection
-let   _firestoreDb    = null;
-let   _syncListeners  = [];
-const _syncSkip       = new Set(); // prevent echo-back: local write → listener → local write
+const _SYNC_KEYS  = ['orders', 'bookings', 'profiles', 'feedback'];
+const _SYNC_COLLS = { orders:'zc_orders', bookings:'zc_bookings', profiles:'zc_profiles', feedback:'zc_feedback' };
+let   _firestoreDb   = null;
+let   _syncListeners = [];
 
-// ── Push one key's data up to Firestore ──────────────────────────────────────
-async function _pushToFirestore(key, value) {
-  if (!_firestoreDb || !_SYNC_KEYS.includes(key)) return;
-  _syncSkip.add(key);   // listener will skip the echo
-  try {
-    await _firestoreDb.collection(_SYNC_COLL).doc(key).set({
-      data:      value,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch(e) {
-    _syncSkip.delete(key);
-    console.warn('[Firebase] push failed:', e.message);
+// ── Safe Firestore document ID for a record ───────────────────────────────────
+function _fbDocId(key, rec) {
+  if (key === 'orders')   return rec.id   || null;
+  if (key === 'bookings') return rec.id   || null;
+  if (key === 'profiles') return (rec.email || '').replace(/[.#$[\]/]/g, '_') || null;
+  if (key === 'feedback') {
+    if (!rec.fid) rec.fid = 'fb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    return rec.fid;
   }
+  return null;
 }
 
-// ── Pull all keys from Firestore → localStorage on startup ───────────────────
+// ── Write ONE record to its own Firestore document ────────────────────────────
+async function _writeRecord(key, rec) {
+  if (!_firestoreDb) return;
+  const docId = _fbDocId(key, rec);
+  if (!docId) return;
+  try {
+    await _firestoreDb.collection(_SYNC_COLLS[key]).doc(docId).set(rec);
+  } catch(e) { console.warn('[Firebase] write failed:', key, docId, e.message); }
+}
+
+// ── Push an array — each item gets its own doc (no overwrites) ────────────────
+async function _pushToFirestore(key, value) {
+  if (!_firestoreDb || !_SYNC_KEYS.includes(key) || !Array.isArray(value)) return;
+  // Use batched writes for efficiency (max 500 per batch — plenty for a cafe)
+  try {
+    const batch = _firestoreDb.batch();
+    let count = 0;
+    for (const rec of value) {
+      const docId = _fbDocId(key, rec);
+      if (!docId) continue;
+      batch.set(_firestoreDb.collection(_SYNC_COLLS[key]).doc(docId), rec);
+      count++;
+    }
+    if (count > 0) await batch.commit();
+  } catch(e) { console.warn('[Firebase] push failed:', key, e.message); }
+}
+
+// ── Read all docs from a collection → array ───────────────────────────────────
+async function _fetchCollection(key) {
+  try {
+    const snap = await _firestoreDb.collection(_SYNC_COLLS[key]).get();
+    return snap.docs.map(d => d.data());
+  } catch(e) { console.warn('[Firebase] fetch error:', key, e.message); return null; }
+}
+
+// ── Merge local + remote by ID, then store locally ───────────────────────────
+function _mergeAndStore(key, remote) {
+  const local = load(key, []);
+  // Build map: remote keyed by docId, then overlay local (local = freshest write)
+  const map = new Map();
+  for (const r of remote) { const id = _fbDocId(key, r); if (id) map.set(id, r); }
+  for (const r of local)  { const id = _fbDocId(key, r); if (id) map.set(id, r); }
+  const merged = Array.from(map.values());
+  localStorage.setItem('zaemu_' + key, JSON.stringify(merged));
+  return merged;
+}
+
+// ── Pull all collections from Firestore on startup ────────────────────────────
 async function _fetchAllFromFirestore() {
   if (!_firestoreDb) return;
   for (const key of _SYNC_KEYS) {
-    try {
-      const snap = await _firestoreDb.collection(_SYNC_COLL).doc(key).get();
-      if (snap.exists) {
-        const remote = snap.data().data;
-        if (Array.isArray(remote)) {
-          // Merge: remote wins unless local has MORE entries (edge-case: offline writes)
-          const local = load(key, []);
-          const merged = remote.length >= local.length ? remote : local;
-          localStorage.setItem('zaemu_' + key, JSON.stringify(merged));
-          // If local had more, push the richer copy back up
-          if (local.length > remote.length) _pushToFirestore(key, local);
-        }
-      } else {
-        // First run: seed Firestore from whatever is in localStorage
-        const local = load(key, []);
-        if (local.length) _pushToFirestore(key, local);
-      }
-    } catch(e) { console.warn('[Firebase] fetch error:', key, e.message); }
+    const remote = await _fetchCollection(key);
+    if (!remote) continue;
+    const merged = _mergeAndStore(key, remote);
+    // Seed Firestore with any local-only records that aren't up there yet
+    const remoteIds = new Set(remote.map(r => _fbDocId(key, r)));
+    const localOnly = merged.filter(r => !remoteIds.has(_fbDocId(key, r)));
+    if (localOnly.length) _pushToFirestore(key, localOnly);
   }
 }
 
-// ── Real-time listeners: remote change → update localStorage + re-render ─────
+// ── Real-time collection listeners ───────────────────────────────────────────
 function _setupFirestoreListeners() {
-  _syncListeners.forEach(u => u());   // tear down old listeners
+  _syncListeners.forEach(u => u());
   _syncListeners = [];
   for (const key of _SYNC_KEYS) {
-    const unsub = _firestoreDb.collection(_SYNC_COLL).doc(key)
+    // Listen to the whole collection — fires whenever ANY record changes/is added
+    const unsub = _firestoreDb.collection(_SYNC_COLLS[key])
       .onSnapshot(snap => {
-        if (_syncSkip.has(key)) { _syncSkip.delete(key); return; } // skip echo
-        if (!snap.exists) return;
-        const remote = snap.data().data;
-        if (!Array.isArray(remote)) return;
-        localStorage.setItem('zaemu_' + key, JSON.stringify(remote));
+        const remote = snap.docs.map(d => d.data());
+        _mergeAndStore(key, remote);
         _onRemoteUpdate(key);
-      }, err => console.warn('[Firebase] listener error:', err.message));
+      }, err => console.warn('[Firebase] listener error:', key, err.message));
     _syncListeners.push(unsub);
   }
 }
@@ -4711,10 +4748,11 @@ function confirmPayment() {
       : '',
   };
 
-  // Save order
+  // Save order locally + push just this one order doc to Firestore
   const orders = db.orders;
   orders.push(order);
-  db.orders = orders;
+  localStorage.setItem('zaemu_orders', JSON.stringify(orders)); // local only
+  _writeRecord('orders', order);                                // one doc → Firestore
 
   // Clear active booking reference after order placed
   state.activeBooking = null;
@@ -4842,7 +4880,8 @@ function submitBooking() {
 
   const bookings = db.bookings;
   bookings.push(booking);
-  db.bookings = bookings;
+  localStorage.setItem('zaemu_bookings', JSON.stringify(bookings)); // local only
+  _writeRecord('bookings', booking);                                // one doc → Firestore
 
   // Always store the active booking so the cart ref banner can use it
   state.activeBooking = booking;
@@ -5785,9 +5824,12 @@ function submitFeedback() {
     // Guest email field (optional, for auto-reply)
     email:     (document.getElementById('f_email')?.value || '').trim() || (user ? user.email : null),
   };
+  // Assign a unique ID so this feedback gets its own Firestore document
+  fb.fid = 'fb_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   const feedbacks = db.feedback;
   feedbacks.push(fb);
-  db.feedback = feedbacks;
+  localStorage.setItem('zaemu_feedback', JSON.stringify(feedbacks)); // local only
+  _writeRecord('feedback', fb);                                      // one doc → Firestore
 
   // Auto-send acknowledgement email based on rating
   autoSendFeedbackAck(fb);
