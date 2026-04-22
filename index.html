@@ -7334,8 +7334,8 @@ function renderProfile() {
            id="slRoleCards"></div>
       <input type="hidden" id="sl_role" value="">
 
-      <!-- PIN input -->
-      <div id="slPinBox" style="margin-bottom:14px">
+      <!-- Normal PIN login -->
+      <div id="slPinBox" style="display:none;margin-bottom:14px">
         <label style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">
           🔑 PIN / Password
         </label>
@@ -7343,9 +7343,36 @@ function renderProfile() {
           style="text-align:center;letter-spacing:3px;font-size:16px"
           onkeydown="if(event.key==='Enter')staffLogin()">
       </div>
-      <button class="btn btn-primary btn-block" onclick="staffLogin()"
-        style="background:linear-gradient(135deg,#1a1a2e,#2c3e50);border-color:#2c3e50">
+
+      <!-- First-time Admin PIN setup (shown when no PIN is configured) -->
+      <div id="slSetupBox" style="display:none;margin-bottom:14px">
+        <div style="background:#fff8ee;border:2px solid var(--druk-border);border-radius:10px;padding:14px;margin-bottom:12px">
+          <div style="font-weight:700;color:var(--druk-dark);font-size:13px;margin-bottom:4px">🆕 First-time Admin Setup</div>
+          <div style="font-size:12px;color:#666;">No Admin PIN has been set yet. Create one now to secure your admin account.</div>
+        </div>
+        <div class="form-group" style="margin-bottom:10px">
+          <label style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">New PIN (4–8 digits)</label>
+          <input type="password" id="sl_new_pin" placeholder="e.g. 1234"
+            style="text-align:center;letter-spacing:3px;font-size:16px" maxlength="8"
+            oninput="this.value=this.value.replace(/\D/g,'')"
+            onkeydown="if(event.key==='Enter')setupAdminPin()">
+        </div>
+        <div class="form-group">
+          <label style="font-size:13px;font-weight:600;color:#444;display:block;margin-bottom:6px">Confirm PIN</label>
+          <input type="password" id="sl_confirm_pin" placeholder="Re-enter PIN"
+            style="text-align:center;letter-spacing:3px;font-size:16px" maxlength="8"
+            oninput="this.value=this.value.replace(/\D/g,'')"
+            onkeydown="if(event.key==='Enter')setupAdminPin()">
+        </div>
+      </div>
+
+      <button id="slLoginBtn" class="btn btn-primary btn-block" onclick="staffLogin()"
+        style="display:none;background:linear-gradient(135deg,#1a1a2e,#2c3e50);border-color:#2c3e50">
         🔓 Access Staff Area
+      </button>
+      <button id="slSetupBtn" class="btn btn-primary btn-block" onclick="setupAdminPin()"
+        style="display:none;background:linear-gradient(135deg,#27ae60,#1a7a3a);border-color:#1a7a3a">
+        ✅ Create Admin PIN &amp; Login
       </button>
       <p style="text-align:center;font-size:11px;color:#aaa;margin-top:10px">
         🛡️ Authorised staff only · 5 failed attempts = 5 min lockout
@@ -7382,9 +7409,15 @@ function renderStaffRoleCards() {
       <div style="font-size:28px;margin-bottom:5px">${r.icon}</div>
       <div style="font-size:12px;font-weight:800;color:#444">${r.label}</div>
     </div>`).join('');
-  // Reset form
-  const ri = document.getElementById('sl_role'); if (ri) ri.value = '';
-  const pf = document.getElementById('sl_pin');  if (pf) { pf.value = ''; }
+  // Reset form — hide all input boxes until a role is selected
+  const ri = document.getElementById('sl_role');    if (ri) ri.value = '';
+  const pf = document.getElementById('sl_pin');     if (pf) pf.value = '';
+  const np = document.getElementById('sl_new_pin'); if (np) np.value = '';
+  const cp = document.getElementById('sl_confirm_pin'); if (cp) cp.value = '';
+  const pinBox   = document.getElementById('slPinBox');   if (pinBox)   pinBox.style.display   = 'none';
+  const setupBox = document.getElementById('slSetupBox'); if (setupBox) setupBox.style.display = 'none';
+  const loginBtn = document.getElementById('slLoginBtn');  if (loginBtn) loginBtn.style.display = 'none';
+  const setupBtn = document.getElementById('slSetupBtn');  if (setupBtn) setupBtn.style.display = 'none';
 }
 
 function selectStaffRole(role) {
@@ -7402,12 +7435,58 @@ function selectStaffRole(role) {
     card.style.background = bgs[role];
     card.style.transform = 'scale(1.05)';
   }
+
   // Store selected role
   const roleInput = document.getElementById('sl_role');
   if (roleInput) roleInput.value = role;
-  // Focus PIN field
-  const pinField = document.getElementById('sl_pin');
-  if (pinField) { pinField.value = ''; pinField.focus(); }
+
+  // Decide which form to show
+  const accounts   = getStaffAccounts();
+  const hasPIN     = !!(accounts[role] && accounts[role].pin);
+  const pinBox     = document.getElementById('slPinBox');
+  const setupBox   = document.getElementById('slSetupBox');
+  const loginBtn   = document.getElementById('slLoginBtn');
+  const setupBtn   = document.getElementById('slSetupBtn');
+
+  // Admin with no PIN → first-time setup mode
+  const isFirstTimeAdmin = (role === 'admin' && !hasPIN);
+
+  if (pinBox)   pinBox.style.display   = isFirstTimeAdmin ? 'none'  : 'block';
+  if (setupBox) setupBox.style.display = isFirstTimeAdmin ? 'block' : 'none';
+  if (loginBtn) loginBtn.style.display = isFirstTimeAdmin ? 'none'  : 'block';
+  if (setupBtn) setupBtn.style.display = isFirstTimeAdmin ? 'block' : 'none';
+
+  // Focus the right input
+  if (isFirstTimeAdmin) {
+    document.getElementById('sl_new_pin')?.focus();
+  } else {
+    const pinField = document.getElementById('sl_pin');
+    if (pinField) { pinField.value = ''; pinField.focus(); }
+  }
+}
+
+async function setupAdminPin() {
+  const newPin  = (document.getElementById('sl_new_pin')?.value  || '').trim();
+  const confPin = (document.getElementById('sl_confirm_pin')?.value || '').trim();
+
+  if (!newPin)              { toast('⚠️ Please enter a PIN.', '#e67e22'); return; }
+  if (!/^\d{4,8}$/.test(newPin)) { toast('⚠️ PIN must be 4–8 digits (numbers only).', '#e67e22'); return; }
+  if (newPin !== confPin)   { toast('⚠️ PINs do not match. Try again.', '#e67e22'); return; }
+
+  // Hash and save the new PIN
+  const hashed   = await _sha256('pin_' + newPin);
+  const accounts = getStaffAccounts();
+  accounts.admin.pin = hashed;
+  save('staffAccounts', accounts);
+
+  toast('✅ Admin PIN created! Logging you in…', '#27ae60');
+
+  // Auto-login
+  const session = { role:'admin', name: accounts.admin.name || 'Admin', ...accounts.admin };
+  save('staffSession', session);
+  applyStaffSession();
+  showPage('admin');
+  toast('👑 Welcome, Admin!', '#27ae60');
 }
 
 function clearStaffRoleSelection() {
@@ -8478,7 +8557,10 @@ async function staffLogin() {
       return;
     }
     if (!account.pin) {
-      toast('⛔ Admin PIN not configured. Contact system administrator.', '#e74c3c');
+      // Should not reach here — selectStaffRole shows setup form first.
+      // Fallback: prompt them to use the setup form.
+      toast('⚠️ Click the 👑 Admin card again to create your first PIN.', '#e67e22');
+      selectStaffRole('admin');
       return;
     }
   } else {
