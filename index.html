@@ -3430,9 +3430,20 @@ function _updateSyncStatus(status) {
   el.style.color = s.color;
 }
 
+// ── Zaemu Cafe Firebase config (public — security enforced by Firestore rules) ──
+const _FB_DEFAULT = {
+  apiKey:            'AIzaSyDMCt7nPfGc_3V9c6AeLqaxDkAQj796t8c',
+  authDomain:        'zaemu-cafe.firebaseapp.com',
+  projectId:         'zaemu-cafe',
+  storageBucket:     'zaemu-cafe.firebasestorage.app',
+  messagingSenderId: '87137478599',
+  appId:             '1:87137478599:web:840bd71a6483c87de91be2',
+};
+
 // ── Main entry point — called from init() ─────────────────────────────────────
 async function initFirebase() {
-  const cfg = load('firebaseConfig', null);
+  // Use saved config from settings UI, or fall back to the built-in default
+  const cfg = load('firebaseConfig', null) || _FB_DEFAULT;
   if (!cfg || !cfg.projectId) { _updateSyncStatus('offline'); return; }
   try {
     const app = firebase.apps.length
