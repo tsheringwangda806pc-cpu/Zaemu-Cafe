@@ -1883,6 +1883,7 @@
             </select>
             <span id="orderTabCount" style="font-size:12px;color:#888"></span>
             <button class="btn btn-sm btn-outline" onclick="renderOrdersTab()">🔄 Refresh</button>
+            <button class="btn btn-sm" style="background:#1a4a8a;color:white" onclick="forceSyncFromCloud()">☁️ Sync Now</button>
           </div>
         </div>
         <!-- Summary strip -->
@@ -3454,17 +3455,20 @@ function _onRemoteUpdate(key) {
 }
 
 // ── Update the sync-status badge in admin settings ───────────────────────────
-function _updateSyncStatus(status) {
+function _updateSyncStatus(status, errMsg) {
   const el = document.getElementById('fbSyncStatus');
-  if (!el) return;
-  const states = {
-    connected: { icon:'🟢', text:'Live sync active — orders from every device appear here instantly', color:'#1a7a3a' },
-    error:     { icon:'🔴', text:'Sync error — check your Firebase config below',                    color:'#c0392b' },
-    offline:   { icon:'⚪', text:'Local mode — configure Firebase below to sync across all devices', color:'#888'   },
-  };
-  const s = states[status] || states.offline;
-  el.innerHTML = `${s.icon} ${s.text}`;
-  el.style.color = s.color;
+  if (el) {
+    const states = {
+      connected: { icon:'🟢', text:'Live sync active — orders from every device appear here instantly', color:'#1a7a3a' },
+      error:     { icon:'🔴', text:'Sync error' + (errMsg ? ': ' + errMsg : ' — check Firebase rules'), color:'#c0392b' },
+      offline:   { icon:'⚪', text:'Local mode — configure Firebase below to sync across all devices',   color:'#888'   },
+    };
+    const s = states[status] || states.offline;
+    el.innerHTML = `${s.icon} ${s.text}`;
+    el.style.color = s.color;
+  }
+  // Also update the orders tab badge
+  _updateSyncBadge();
 }
 
 // ── Zaemu Cafe Firebase config (public — security enforced by Firestore rules) ──
@@ -3479,26 +3483,89 @@ const _FB_DEFAULT = {
 
 // ── Main entry point — called from init() ─────────────────────────────────────
 async function initFirebase() {
-  // Use saved config from settings UI, or fall back to the built-in default
   const cfg = load('firebaseConfig', null) || _FB_DEFAULT;
   if (!cfg || !cfg.projectId) { _updateSyncStatus('offline'); return; }
-  try {
-    const app = firebase.apps.length
-      ? firebase.apps[0]
-      : firebase.initializeApp(cfg);
-    _firestoreDb = firebase.firestore(app);
-    // Offline persistence so cached data survives a refresh
-    try { await _firestoreDb.enablePersistence({ synchronizeTabs: true }); } catch(_) {}
 
-    await _fetchAllFromFirestore();   // pull latest before first render
-    _setupFirestoreListeners();       // keep listening for remote changes
-    _updateSyncStatus('connected');
-    // If admin page is open, refresh it now with cloud data
+  // Step 1 — initialise Firebase app
+  try {
+    const app = firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(cfg);
+    _firestoreDb = firebase.firestore(app);
+    // NOTE: no enablePersistence — it can silently break listeners in many browsers
+  } catch(err) {
+    console.error('[Firebase] init error:', err.message);
+    _updateSyncStatus('error', err.message);
+    return;
+  }
+
+  // Step 2 — pull current data (separate try so listener setup always runs)
+  try {
+    await _fetchAllFromFirestore();
     const ap = document.querySelector('.page.active')?.id;
     if (ap === 'page-admin') renderAdmin();
   } catch(err) {
-    console.warn('[Firebase] init failed:', err.message);
-    _updateSyncStatus('error');
+    console.warn('[Firebase] initial fetch error:', err.message);
+  }
+
+  // Step 3 — set up real-time listeners (always runs even if fetch failed)
+  try {
+    _setupFirestoreListeners();
+    _updateSyncStatus('connected');
+  } catch(err) {
+    console.warn('[Firebase] listener setup error:', err.message);
+    _updateSyncStatus('error', err.message);
+  }
+
+  // Step 4 — periodic pull every 30 sec as safety net (covers lost listener events)
+  setInterval(async () => {
+    if (!_firestoreDb) return;
+    try {
+      await _fetchAllFromFirestore();
+      const ap = document.querySelector('.page.active')?.id?.replace('page-','');
+      if (ap === 'admin') { renderOrdersTab(); renderBookingsTab(); }
+      if (ap === 'chef')  renderChefOrders();
+      _updateSyncBadge();
+    } catch(_) {}
+  }, 30000);
+}
+
+// ── Force-pull all data right now (called by "Sync Now" button) ───────────────
+async function forceSyncFromCloud() {
+  if (!_firestoreDb) { toast('⚠️ Firebase not connected.', '#e67e22'); return; }
+  _updateSyncBadge('syncing');
+  try {
+    await _fetchAllFromFirestore();
+    renderOrdersTab();
+    renderBookingsTab();
+    renderProfilesTab();
+    renderFeedbackTab();
+    renderAdmin();
+    _updateSyncBadge();
+    toast('☁️ Synced from cloud!', '#27ae60');
+  } catch(err) {
+    toast('❌ Sync failed: ' + err.message, '#e74c3c');
+    _updateSyncStatus('error', err.message);
+  }
+}
+
+function _updateSyncBadge(state) {
+  const badge = document.getElementById('adminOrderSyncBadge');
+  if (!badge) return;
+  if (state === 'syncing') {
+    badge.textContent = '🔄 Syncing from cloud…';
+    badge.style.background = '#fff8ee';
+    badge.style.color = '#e67e22';
+    return;
+  }
+  if (_firestoreDb) {
+    const t = new Date().toLocaleTimeString();
+    badge.textContent = `🟢 Live sync active — last pulled ${t}`;
+    badge.style.background = '#f0fff4';
+    badge.style.color = '#1a7a3a';
+    badge.style.border = '1px solid #b2dfdb';
+  } else {
+    badge.textContent = '⚪ Local only — Firebase not connected';
+    badge.style.background = '#fff8ee';
+    badge.style.color = '#e67e22';
   }
 }
 
@@ -5932,22 +5999,7 @@ function renderAdmin() {
   renderBookingsTab();
   renderProfilesTab();
   renderFeedbackTab();
-
-  // Update the orders tab sync badge
-  const badge = document.getElementById('adminOrderSyncBadge');
-  if (badge) {
-    if (_firestoreDb) {
-      badge.textContent = '🟢 Live cloud sync — orders from all devices appear here instantly';
-      badge.style.background  = '#f0fff4';
-      badge.style.color       = '#1a7a3a';
-      badge.style.border      = '1px solid #b2dfdb';
-    } else {
-      badge.textContent = '⚪ Local only — set up Firebase in ⚙️ Cafe Settings to see all devices';
-      badge.style.background  = '#fff8ee';
-      badge.style.color       = '#e67e22';
-      badge.style.border      = '1px solid var(--druk-border)';
-    }
-  }
+  _updateSyncBadge();
 }
 
 // ══════════════════════════════════════════════════════════
