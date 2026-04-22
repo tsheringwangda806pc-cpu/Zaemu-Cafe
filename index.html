@@ -1289,6 +1289,10 @@
     tryNext();
   }
 </script>
+
+<!-- ── Firebase SDK (Cloud Sync) ─────────────────────────────────────── -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -1843,8 +1847,9 @@
         <button class="btn btn-sm" style="background:#e0d0b0;color:var(--druk-dark)" onclick="clearAllData()">🗑️ Clear All Data</button>
       </div>
 
-      <div class="tabs">
-        <button class="tab active" onclick="switchTab(this,'tab-bookings')">📅 Bookings</button>
+      <div class="tabs" style="flex-wrap:wrap">
+        <button class="tab active" onclick="switchTab(this,'tab-orders');renderOrdersTab()">📋 Orders</button>
+        <button class="tab" onclick="switchTab(this,'tab-bookings')">📅 Bookings</button>
         <button class="tab" onclick="switchTab(this,'tab-profiles')">👤 Profiles</button>
         <button class="tab" onclick="switchTab(this,'tab-feedback')">⭐ Feedback</button>
         <button class="tab" onclick="switchTab(this,'tab-gifts-admin')">🎁 Gifts &amp; Events</button>
@@ -1855,7 +1860,49 @@
         <button class="tab" onclick="switchTab(this,'tab-archive');renderArchiveTab()">📁 History &amp; Archive</button>
       </div>
 
-      <div id="tab-bookings" class="tab-content">
+      <!-- ── ORDERS TAB ── -->
+      <div id="tab-orders" class="tab-content">
+        <!-- Sync status -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+          <div id="adminOrderSyncBadge" style="font-size:12px;font-weight:700;padding:6px 12px;
+               border-radius:20px;background:#f0fff4;color:#27ae60;border:1px solid #b2dfdb">
+            ☁️ Checking sync…
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input type="text" id="orderSearch" placeholder="🔍 Search by ID, customer, item…"
+              oninput="renderOrdersTab()"
+              style="min-width:200px;font-size:13px;padding:7px 12px;border-radius:8px;border:2px solid var(--druk-border)">
+            <select id="orderStatusFilter" onchange="renderOrdersTab()"
+              style="font-size:13px;padding:7px 10px;border-radius:8px;border:2px solid var(--druk-border)">
+              <option value="all">All Statuses</option>
+              <option value="Pending">Pending</option>
+              <option value="Confirmed">Confirmed</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Delivered">Delivered</option>
+              <option value="Cancelled">Cancelled</option>
+            </select>
+            <span id="orderTabCount" style="font-size:12px;color:#888"></span>
+            <button class="btn btn-sm btn-outline" onclick="renderOrdersTab()">🔄 Refresh</button>
+          </div>
+        </div>
+        <!-- Summary strip -->
+        <div id="orderTabSummary" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <!-- Table -->
+        <div class="data-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Order ID</th><th>Date/Time</th><th>Customer</th><th>Items</th>
+                <th>Total</th><th>Payment</th><th>Type</th><th>Status</th><th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="ordersTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── BOOKINGS TAB ── -->
+      <div id="tab-bookings" class="tab-content" style="display:none">
         <div class="data-table-wrap">
           <table id="bookingsTable">
             <thead>
@@ -2709,6 +2756,76 @@
         </div>
       </div>
 
+      <!-- ══ FIREBASE CLOUD SYNC ══ -->
+      <div style="background:#eef6ff;border:2px solid #4a90d9;border-radius:12px;padding:20px;margin-bottom:20px">
+        <h4 style="color:#1a4a8a;font-size:15px;font-weight:800;margin-bottom:6px;display:flex;align-items:center;gap:8px">
+          ☁️ Cloud Sync (Firebase)
+        </h4>
+        <p style="font-size:12px;color:#444;margin-bottom:14px;line-height:1.6">
+          Without this, orders placed on a customer's phone are only saved on <em>their</em> device and never reach your admin dashboard.<br>
+          Connect Firebase Firestore so every order, booking, and profile syncs instantly across all devices — for free.
+        </p>
+
+        <!-- Status badge -->
+        <div id="fbSyncStatus" style="font-size:13px;font-weight:700;padding:10px 14px;
+             background:white;border-radius:8px;margin-bottom:16px;border:1px solid #c0d8f0">
+          ⚪ Local mode — configure Firebase below to sync across all devices
+        </div>
+
+        <!-- How-to steps -->
+        <details style="margin-bottom:16px;background:white;border-radius:8px;border:1px solid #c0d8f0;padding:12px">
+          <summary style="cursor:pointer;font-weight:700;font-size:13px;color:#1a4a8a">📋 How to get your Firebase config (takes ~5 minutes)</summary>
+          <ol style="font-size:12px;color:#444;line-height:2;margin-top:10px;padding-left:18px">
+            <li>Go to <strong>console.firebase.google.com</strong> and sign in with your Google account</li>
+            <li>Click <strong>"Add project"</strong> → name it <em>zaemu-cafe</em> → disable Google Analytics → Create</li>
+            <li>In the left sidebar click <strong>Firestore Database</strong> → <strong>Create database</strong></li>
+            <li>Choose <strong>Start in test mode</strong> (allows all reads/writes for 30 days — we'll tighten later) → Next → Enable</li>
+            <li>In the left sidebar click the ⚙️ gear → <strong>Project settings</strong></li>
+            <li>Scroll to <strong>"Your apps"</strong> → click the <strong>&lt;/&gt;</strong> Web button → register app name <em>zaemu-web</em></li>
+            <li>Copy the <code>firebaseConfig</code> values shown and paste each field below</li>
+          </ol>
+        </details>
+
+        <!-- Config input fields -->
+        <div class="form-row">
+          <div class="form-group">
+            <label style="font-size:12px;font-weight:700">API Key</label>
+            <input type="password" id="fb_apiKey" placeholder="AIzaSy…" style="font-family:monospace;font-size:12px">
+          </div>
+          <div class="form-group">
+            <label style="font-size:12px;font-weight:700">Auth Domain</label>
+            <input type="text" id="fb_authDomain" placeholder="zaemu-cafe.firebaseapp.com" style="font-family:monospace;font-size:12px">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label style="font-size:12px;font-weight:700">Project ID <span style="color:#c0392b">*</span></label>
+            <input type="text" id="fb_projectId" placeholder="zaemu-cafe" style="font-family:monospace;font-size:12px">
+          </div>
+          <div class="form-group">
+            <label style="font-size:12px;font-weight:700">Storage Bucket</label>
+            <input type="text" id="fb_storageBucket" placeholder="zaemu-cafe.appspot.com" style="font-family:monospace;font-size:12px">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label style="font-size:12px;font-weight:700">Messaging Sender ID</label>
+            <input type="text" id="fb_messagingSenderId" placeholder="123456789012" style="font-family:monospace;font-size:12px">
+          </div>
+          <div class="form-group">
+            <label style="font-size:12px;font-weight:700">App ID</label>
+            <input type="text" id="fb_appId" placeholder="1:123…:web:abc…" style="font-family:monospace;font-size:12px">
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px">
+          <button class="btn btn-primary" style="background:#1a4a8a" onclick="saveFirebaseConfig()">
+            ☁️ Save &amp; Connect
+          </button>
+          <button class="btn btn-outline" onclick="clearFirebaseConfig()">🗑️ Remove Config</button>
+          <span style="font-size:11px;color:#888">Config is stored in your browser — paste the same config on every admin device.</span>
+        </div>
+      </div>
+
       <!-- ── HISTORY & ARCHIVE TAB ── -->
       <div id="tab-archive" class="tab-content" style="display:none">
 
@@ -3202,8 +3319,187 @@ let state = {
 };
 
 // ─── DATA PERSISTENCE ────────────────────────────
-function save(key, val) { localStorage.setItem('zaemu_' + key, JSON.stringify(val)); }
+function save(key, val) {
+  localStorage.setItem('zaemu_' + key, JSON.stringify(val));
+  _pushToFirestore(key, val);   // async, non-blocking — no-op if Firebase not configured
+}
 function load(key, def) { const v = localStorage.getItem('zaemu_' + key); return v ? JSON.parse(v) : def; }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FIREBASE CLOUD SYNC  — orders / bookings / profiles / feedback
+//  Syncs all devices in real-time so every customer order appears on the
+//  admin dashboard instantly, regardless of which phone/browser placed it.
+// ══════════════════════════════════════════════════════════════════════════════
+const _SYNC_KEYS = ['orders', 'bookings', 'profiles', 'feedback'];
+const _SYNC_COLL = 'zaemu_cafe';   // Firestore collection
+let   _firestoreDb    = null;
+let   _syncListeners  = [];
+const _syncSkip       = new Set(); // prevent echo-back: local write → listener → local write
+
+// ── Push one key's data up to Firestore ──────────────────────────────────────
+async function _pushToFirestore(key, value) {
+  if (!_firestoreDb || !_SYNC_KEYS.includes(key)) return;
+  _syncSkip.add(key);   // listener will skip the echo
+  try {
+    await _firestoreDb.collection(_SYNC_COLL).doc(key).set({
+      data:      value,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch(e) {
+    _syncSkip.delete(key);
+    console.warn('[Firebase] push failed:', e.message);
+  }
+}
+
+// ── Pull all keys from Firestore → localStorage on startup ───────────────────
+async function _fetchAllFromFirestore() {
+  if (!_firestoreDb) return;
+  for (const key of _SYNC_KEYS) {
+    try {
+      const snap = await _firestoreDb.collection(_SYNC_COLL).doc(key).get();
+      if (snap.exists) {
+        const remote = snap.data().data;
+        if (Array.isArray(remote)) {
+          // Merge: remote wins unless local has MORE entries (edge-case: offline writes)
+          const local = load(key, []);
+          const merged = remote.length >= local.length ? remote : local;
+          localStorage.setItem('zaemu_' + key, JSON.stringify(merged));
+          // If local had more, push the richer copy back up
+          if (local.length > remote.length) _pushToFirestore(key, local);
+        }
+      } else {
+        // First run: seed Firestore from whatever is in localStorage
+        const local = load(key, []);
+        if (local.length) _pushToFirestore(key, local);
+      }
+    } catch(e) { console.warn('[Firebase] fetch error:', key, e.message); }
+  }
+}
+
+// ── Real-time listeners: remote change → update localStorage + re-render ─────
+function _setupFirestoreListeners() {
+  _syncListeners.forEach(u => u());   // tear down old listeners
+  _syncListeners = [];
+  for (const key of _SYNC_KEYS) {
+    const unsub = _firestoreDb.collection(_SYNC_COLL).doc(key)
+      .onSnapshot(snap => {
+        if (_syncSkip.has(key)) { _syncSkip.delete(key); return; } // skip echo
+        if (!snap.exists) return;
+        const remote = snap.data().data;
+        if (!Array.isArray(remote)) return;
+        localStorage.setItem('zaemu_' + key, JSON.stringify(remote));
+        _onRemoteUpdate(key);
+      }, err => console.warn('[Firebase] listener error:', err.message));
+    _syncListeners.push(unsub);
+  }
+}
+
+// ── Re-render whatever page is currently open after a remote update ───────────
+function _onRemoteUpdate(key) {
+  const activePage = document.querySelector('.page.active')?.id?.replace('page-', '') || '';
+  if (key === 'orders') {
+    if (activePage === 'admin')    renderOrdersTab();
+    if (activePage === 'chef')     renderChefOrders();
+    if (activePage === 'delivery') renderDelivery();
+    if (activePage === 'finance')  renderFcOrderList();
+  }
+  if (key === 'bookings') {
+    if (activePage === 'admin')   renderBookingsTab();
+    if (activePage === 'booking') initBooking();
+  }
+  if (key === 'profiles') {
+    if (activePage === 'admin') renderProfilesTab();
+  }
+  if (key === 'feedback') {
+    if (activePage === 'admin') renderFeedbackTab();
+  }
+  updateCartCount();
+}
+
+// ── Update the sync-status badge in admin settings ───────────────────────────
+function _updateSyncStatus(status) {
+  const el = document.getElementById('fbSyncStatus');
+  if (!el) return;
+  const states = {
+    connected: { icon:'🟢', text:'Live sync active — orders from every device appear here instantly', color:'#1a7a3a' },
+    error:     { icon:'🔴', text:'Sync error — check your Firebase config below',                    color:'#c0392b' },
+    offline:   { icon:'⚪', text:'Local mode — configure Firebase below to sync across all devices', color:'#888'   },
+  };
+  const s = states[status] || states.offline;
+  el.innerHTML = `${s.icon} ${s.text}`;
+  el.style.color = s.color;
+}
+
+// ── Main entry point — called from init() ─────────────────────────────────────
+async function initFirebase() {
+  const cfg = load('firebaseConfig', null);
+  if (!cfg || !cfg.projectId) { _updateSyncStatus('offline'); return; }
+  try {
+    const app = firebase.apps.length
+      ? firebase.apps[0]
+      : firebase.initializeApp(cfg);
+    _firestoreDb = firebase.firestore(app);
+    // Offline persistence so cached data survives a refresh
+    try { await _firestoreDb.enablePersistence({ synchronizeTabs: true }); } catch(_) {}
+
+    await _fetchAllFromFirestore();   // pull latest before first render
+    _setupFirestoreListeners();       // keep listening for remote changes
+    _updateSyncStatus('connected');
+    // If admin page is open, refresh it now with cloud data
+    const ap = document.querySelector('.page.active')?.id;
+    if (ap === 'page-admin') renderAdmin();
+  } catch(err) {
+    console.warn('[Firebase] init failed:', err.message);
+    _updateSyncStatus('error');
+  }
+}
+
+// ── Save / load Firebase config (stored in localStorage, admin-only) ──────────
+function saveFirebaseConfig() {
+  const fields = ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'];
+  const cfg = {};
+  let filled = 0;
+  fields.forEach(f => {
+    const v = (document.getElementById('fb_' + f)?.value || '').trim();
+    if (v) { cfg[f] = v; filled++; }
+  });
+  if (filled < 3) { toast('⚠️ Please fill in at least apiKey, authDomain, and projectId.', '#e67e22'); return; }
+  localStorage.setItem('zaemu_firebaseConfig', JSON.stringify(cfg));
+  toast('✅ Firebase config saved — reconnecting…', '#27ae60');
+  // Tear down old listeners and re-init
+  _syncListeners.forEach(u => u());
+  _syncListeners = [];
+  _firestoreDb = null;
+  if (firebase.apps.length) {
+    firebase.apps[0].delete().then(() => initFirebase());
+  } else {
+    initFirebase();
+  }
+}
+
+function loadFirebaseConfigUI() {
+  const cfg = load('firebaseConfig', {});
+  const fields = ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'];
+  fields.forEach(f => {
+    const el = document.getElementById('fb_' + f);
+    if (el && cfg[f]) el.value = cfg[f];
+  });
+  _updateSyncStatus(_firestoreDb ? 'connected' : 'offline');
+}
+
+function clearFirebaseConfig() {
+  if (!confirm('Remove Firebase config and go back to local-only mode?')) return;
+  localStorage.removeItem('zaemu_firebaseConfig');
+  _syncListeners.forEach(u => u());
+  _syncListeners = [];
+  _firestoreDb = null;
+  ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'].forEach(f => {
+    const el = document.getElementById('fb_' + f);
+    if (el) el.value = '';
+  });
+  _updateSyncStatus('offline');
+  toast('Firebase config removed. App is now local-only.', '#888');
+}
 
 let db = {
   get orders()    { return load('orders', []); },
@@ -5578,9 +5874,27 @@ function renderAdmin() {
   // ── Unified Staff & Accounts panel (always visible above tabs) ──
   renderStaffProfiles();
 
+  // Render the currently-visible tab (Orders is now default)
+  renderOrdersTab();
   renderBookingsTab();
   renderProfilesTab();
   renderFeedbackTab();
+
+  // Update the orders tab sync badge
+  const badge = document.getElementById('adminOrderSyncBadge');
+  if (badge) {
+    if (_firestoreDb) {
+      badge.textContent = '🟢 Live cloud sync — orders from all devices appear here instantly';
+      badge.style.background  = '#f0fff4';
+      badge.style.color       = '#1a7a3a';
+      badge.style.border      = '1px solid #b2dfdb';
+    } else {
+      badge.textContent = '⚪ Local only — set up Firebase in ⚙️ Cafe Settings to see all devices';
+      badge.style.background  = '#fff8ee';
+      badge.style.color       = '#e67e22';
+      badge.style.border      = '1px solid var(--druk-border)';
+    }
+  }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -6071,7 +6385,7 @@ function renderStaffProfiles() {
           ${fieldRows}
           <p style="font-size:11px;color:#aaa;margin:6px 0 12px">
             Leave PIN blank to keep current PIN unchanged. Enter new PIN to update it.
-            ${role === 'admin' ? '<br><strong style="color:#2d6a4f">Admin can always log in without a PIN — PIN only adds extra security.</strong>' : ''}
+            ${role === 'admin' ? '<br><strong style="color:#c0392b">⚠️ Admin PIN is required — the Admin account cannot be accessed without a PIN.</strong>' : '<br><span style="color:#888">Only Admin can set or change staff PINs from this panel.</span>'}
           </p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="saveStaffRoleByAdmin('${role}')">💾 Save ${label}</button>
@@ -6341,11 +6655,12 @@ function switchTab(btn, tabId) {
   if (tabId === 'tab-chef-orders')    renderChefOrders();
   if (tabId === 'tab-chef-checklist') renderKitchenChecklist();
   if (tabId === 'tab-chef-insights')  renderCostInsights();
-  if (tabId === 'tab-cafe-settings')  renderCafeSettingsTab();
+  if (tabId === 'tab-cafe-settings')  { renderCafeSettingsTab(); loadFirebaseConfigUI(); }
   if (tabId === 'tab-pay-report')     renderFinanceCentre();
   if (tabId === 'tab-gifts-admin')    renderGiftsPage();
   if (tabId === 'tab-email-centre')   renderEmailCentreTab();
   if (tabId === 'tab-archive')        renderArchiveTab();
+  if (tabId === 'tab-orders')         renderOrdersTab();
   if (tabId === 'tab-profiles')       renderProfilesTab();
   if (tabId === 'tab-feedback')       renderFeedbackTab();
   if (tabId === 'tab-bookings')       renderBookingsTab();
@@ -7428,6 +7743,9 @@ function _showPrivacyNoticeIfNeeded() {
   updateCartCount();
   applyStaffSession();
   _showPrivacyNoticeIfNeeded();
+
+  // ── Firebase cloud sync — pulls remote data before first render ─────────
+  initFirebase();
 
   // ── Landing gate: send guest straight to profile/login ──
   if (!db.user && !getStaffSession()) {

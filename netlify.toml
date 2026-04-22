@@ -31,8 +31,8 @@
     # Permissions — block camera/mic/location by default
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
 
-    # Content Security Policy — only load from same origin
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https:; font-src 'self' data:; frame-src 'none';"
+    # Content Security Policy — same origin + Firebase + Google APIs
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com https://apis.google.com https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.google.com https:; font-src 'self' data:; frame-src 'none';"
 
     # HSTS — force HTTPS for 1 year
     Strict-Transport-Security = "max-age=31536000; includeSubDomains"
